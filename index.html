@@ -53,6 +53,8 @@
   .qa button { border: 0; border-radius: 11px; padding: 9px 12px; font: 600 14px KHead, -apple-system, system-ui, sans-serif; color: #2a1604; background: linear-gradient(#ffe08a, #f39a1e); }
   .q.armed .qa .arm { background: linear-gradient(#4ade80, #16a34a); color: #fff; }
   .qa .ed { background: rgba(255,255,255,.12); color: #fff; }
+  .qa .tm { border: 1px solid rgba(255,214,107,.55); border-radius: 11px; padding: 8px 6px; background: #0b0f2e; color: #ffd66b;
+    font: 600 14px KHead, -apple-system, system-ui, sans-serif; direction: rtl; text-align: center; }
   .tools { margin-top: 22px; display: grid; gap: 8px; } #setStats { color: #9aa3d9; font-size: 14px; text-align: center; margin-top: 14px; }
   .tools button { border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.05); color: #e5e7ff; border-radius: 13px; padding: 12px; font: 600 15px KHead, -apple-system, system-ui, sans-serif; }
   #editor .box { text-align: right; max-height: 90vh; overflow-y: auto; -webkit-user-select: text; user-select: text; }
@@ -134,7 +136,7 @@
   <label>خەڵات (لە شاشەی سەوز)</label><input id="edPrize">
   <label>وەڵام (لە شاشەی سوور، ئارەزوومەندانە)</label><input id="edAnswer">
   <div class="row"><div><label>جۆر</label><select id="edType"><option value="question">پرسیار</option><option value="challenge">چالنج</option><option value="choice">ببە یان خانەیەکی تر</option></select></div>
-  <div><label>کات (چرکە)</label><select id="edSecs"><option>15</option><option>20</option><option>30</option><option>45</option><option>60</option><option>90</option><option>120</option><option>180</option><option>300</option><option>600</option></select></div></div>
+  <div><label>کات</label><select id="edSecs"></select></div></div>
   <button id="edSave" class="yes">پاشەکەوتکردن</button>
   <button id="edReset" class="ghost">گەڕاندنەوە بۆ دەقی بنەڕەت</button>
   <button id="edCancel" class="ghost">پاشگەزبوونەوە</button>
@@ -984,6 +986,17 @@ $('btnSet').onclick = () => { if (S.name !== 'grid' && S.name !== 'title') retur
 $('setClose').onclick = closeSettings;
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const plain = s => String(s ?? '').replace(/\{\{|\}\}/g, '');
+const TIMES = [10, 15, 20, 25, 30, 40, 45, 60, 90, 120, 180, 240, 300, 420, 600];
+const durWords = sec => sec >= 60 && sec % 60 === 0 ? `${sec / 60} خولەک` : `${sec} چرکە`;
+const timeOptions = cur => (TIMES.includes(cur) ? TIMES : [...TIMES, cur].sort((a, b) => a - b)).map(v => `<option value="${v}"${v === cur ? ' selected' : ''}>${durWords(v)}</option>`).join('');
+// set a question's time; the same time written in its text (e.g. «30 چرکە») follows automatically
+function setTime(id, secs) {
+  const q = getQ(id); if (!q) return; const old = Number(q.seconds) || 30; if (old === secs) return;
+  const e = { ...(store.edits[id] || {}) }; e.seconds = secs;
+  const txt = q.text || '', ow = durWords(old), nw = durWords(secs);
+  if (txt.includes(ow)) e.text = txt.split(ow).join(nw);
+  store.edits[id] = e; saveStore();
+}
 function refreshSettings() {
   if (!IMG.qgold) return;
   const nq = nextQ();
@@ -998,7 +1011,9 @@ function refreshSettings() {
       return `<div class="q${armed ? ' armed' : ''}" data-id="${q.id}">
         <img src="${(AS.img[q.icon] || AS.img.qgold2)}" alt="">
         <div class="qb"><div class="qt">${esc(plain(q.title))}</div><div class="qm">${typ} · ${durTxt} · ${status}</div><div class="qx">${esc(plain(q.text))}</div></div>
-        <div class="qa"><button class="arm" data-arm="${q.id}">${armed ? 'دیاریکراوە ✓' : 'دیاریکردن'}</button><button class="ed" data-ed="${q.id}">✎</button></div></div>`;
+        <div class="qa"><button class="arm" data-arm="${q.id}">${armed ? 'دیاریکراوە ✓' : 'دیاریکردن'}</button>
+          <select class="tm" data-tm="${q.id}" aria-label="کات">${timeOptions(sec)}</select>
+          <button class="ed" data-ed="${q.id}">✎</button></div></div>`;
     }).join('');
     return `<section><h3><span class="dot" style="background:${g.color}"></span>${esc(g.name)}</h3>${items}</section>`;
   }).join('');
@@ -1006,19 +1021,21 @@ function refreshSettings() {
   $('setList').querySelectorAll('[data-arm]').forEach(b => b.onclick = ev => { ev.stopPropagation(); const id = b.dataset.arm; store.armed = store.armed === id ? null : id; saveStore(); refreshSettings();
     if (store.armed) { toast('دیاریکرا — هەر خانەیەک بکرێتەوە دەبێتە ئەم پرسیارە'); setTimeout(closeSettings, 450); } });
   $('setList').querySelectorAll('[data-ed]').forEach(b => b.onclick = ev => { ev.stopPropagation(); openEditor(b.dataset.ed); });
+  $('setList').querySelectorAll('[data-tm]').forEach(sel => sel.onchange = () => { const v = parseInt(sel.value, 10); setTime(sel.dataset.tm, v); refreshSettings(); toast(`کات: ${durWords(v)}`); });
   $('setStats').textContent = `یاری پێکراوە: ${Object.keys(store.used).length} لە ${allQ().length}`;
 }
 let editing = null;
 function openEditor(id) {
   const q = getQ(id); if (!q) return; editing = id;
   $('edTitle').value = q.title || ''; $('edText').value = q.text || ''; $('edPrize').value = q.prize || ''; $('edAnswer').value = q.answer || '';
-  $('edType').value = q.type || 'question'; $('edSecs').value = String(q.seconds || 30);
+  $('edType').value = q.type || 'question'; $('edSecs').innerHTML = timeOptions(Number(q.seconds) || 30);
   $('editor').classList.remove('hidden');
 }
 $('edCancel').onclick = () => { $('editor').classList.add('hidden'); editing = null; };
 $('edSave').onclick = () => { if (!editing) return;
-  const secs = Math.max(5, Math.min(3600, parseInt($('edSecs').value, 10) || 30));
-  store.edits[editing] = { title: $('edTitle').value.trim(), text: $('edText').value.trim(), prize: $('edPrize').value.trim(), answer: $('edAnswer').value.trim(), type: $('edType').value, seconds: secs };
+  const secs = Math.max(5, Math.min(3600, parseInt($('edSecs').value, 10) || 30)), old = Number(getQ(editing).seconds) || 30;
+  let text = $('edText').value.trim(); if (secs !== old && text.includes(durWords(old))) text = text.split(durWords(old)).join(durWords(secs));
+  store.edits[editing] = { title: $('edTitle').value.trim(), text, prize: $('edPrize').value.trim(), answer: $('edAnswer').value.trim(), type: $('edType').value, seconds: secs };
   saveStore(); $('editor').classList.add('hidden'); editing = null; refreshSettings(); toast('پاشەکەوت کرا'); };
 $('edReset').onclick = () => { if (!editing) return; delete store.edits[editing]; saveStore(); openEditor(editing); refreshSettings(); toast('گەڕایەوە بۆ دەقی بنەڕەت'); };
 $('setResetTiles').onclick = () => { if (!confirm('هەموو پرسیارەکان بکرێنەوە بە «ئامادە»؟')) return; store.tiles = Array(12).fill(null); store.used = {}; store.armed = null; saveStore(); refreshSettings(); toast('یاری لە سەرەتاوە'); };
