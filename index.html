@@ -56,6 +56,10 @@
   .qa .tm { border: 1px solid rgba(255,214,107,.55); border-radius: 11px; padding: 8px 6px; background: #0b0f2e; color: #ffd66b;
     font: 600 14px KHead, -apple-system, system-ui, sans-serif; direction: rtl; text-align: center; }
   .tools { margin-top: 22px; display: grid; gap: 8px; } #setStats { color: #9aa3d9; font-size: 14px; text-align: center; margin-top: 14px; }
+  #savePrev, #testVid { width: 100%; max-height: 38vh; border-radius: 14px; background: #000; margin: 4px 0 8px; display: block; }
+  #saveWarn { color: #fca5a5; font-size: 15px; margin: 6px 0; line-height: 1.6; }
+  #testOut { font-size: 15px; line-height: 1.8; text-align: center; color: #cbd5ff; } #testOut .okc { color: #4ade80; } #testOut .bad { color: #f87171; }
+  .tools .test { background: linear-gradient(#2b3290, #141844); border-color: #e9c46a; color: #ffd66b; }
   .tools button { border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.05); color: #e5e7ff; border-radius: 13px; padding: 12px; font: 600 15px KHead, -apple-system, system-ui, sans-serif; }
   #editor .box { text-align: right; max-height: 90vh; overflow-y: auto; -webkit-user-select: text; user-select: text; }
   #editor label { display: block; font-size: 13px; color: #aab2e6; margin: 10px 0 4px; }
@@ -102,7 +106,9 @@
 
 <div id="savePanel" class="sheet hidden"><div class="box">
   <h2>ڤیدیۆکە ئامادەیە ✓</h2>
-  <p id="saveInfo"></p>
+  <video id="savePrev" class="hidden" playsinline controls muted></video>
+  <div id="saveWarn" class="hidden">⚠️ ڤیدیۆکە ناتەواوە یان کار ناکات — تکایە «تاقیکردنەوەی ڕیکۆرد» لە ⚙ تاقی بکەرەوە.</div>
+  <p id="saveInfo" dir="ltr"></p>
   <button id="btnShare" class="yes hidden">پاشەکەوت لە Photos / ناردن</button>
   <button id="btnSave" class="gold">داگرتنی ڤیدیۆ</button>
   <button id="btnNext">یاریی دواتر ←</button>
@@ -123,6 +129,9 @@
   <div id="setList"></div>
   <div id="setStats"></div>
   <div class="tools">
+    <button id="setTest" class="test">⏺ تاقیکردنەوەی ڕیکۆرد (3 چرکە)</button>
+    <div id="testOut"></div>
+    <video id="testVid" class="hidden" playsinline controls muted></video>
     <button id="setResetTiles">هەموو پرسیارەکان بکەرەوە بە «ئامادە»</button>
     <button id="setResetTexts">گەڕاندنەوەی هەموو دەقەکان بۆ بنەڕەت</button>
     <button id="setWipe">سڕینەوەی ڤیدیۆ کۆنەکان لە بیرگە</button>
@@ -241,7 +250,14 @@ window.Rec = (() => {
       try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
       this.rid = Date.now(); this.seq = 0; this.mem = []; this.pending = Promise.resolve();
       if (this.useDB) { try { await tx('meta', 'readwrite', s => s.put({ rid: this.rid, mime: this.mime, ext: this.ext, done: false })); } catch (e) { this.useDB = false; } }
-      this.begin(stream); this.active = true; this.t0 = performance.now(); this.audio = !!audioDest;
+      this.begin(stream); this.active = true; this.t0 = performance.now(); this.audio = !!audioDest; this.lastData = performance.now();
+      // stall guard: chunks normally arrive every 1–2 s; if they stop, ask for data, then warn the host
+      clearInterval(this.sg); this.sg = setInterval(() => {
+        if (!this.active) return; const gap = performance.now() - this.lastData;
+        if (gap > 6000 && !this.asked) { this.asked = true; try { this.rec.requestData(); } catch (e) {} }
+        if (gap > 12000 && !this.warned) { this.warned = true; if (this.onStall) this.onStall(); }
+        if (gap < 6000) { this.asked = false; this.warned = false; }
+      }, 2000);
       // watchdog: if nothing arrives in 4 s (audio never started), restart video-only so the show is still recorded
       clearTimeout(this.wd); this.wd = setTimeout(() => {
         if (this.active && this.seq === 0 && this.audio) {
@@ -254,11 +270,11 @@ window.Rec = (() => {
       const opt = { videoBitsPerSecond: 8000000, audioBitsPerSecond: 160000 }; if (this.mime) opt.mimeType = this.mime;
       this.rec = new MediaRecorder(stream, opt);
       this.rec.ondataavailable = e => { if (e.data && e.data.size) this.put(e.data); };
-      this.rec.onerror = e => console.error('recorder', e);
+      this.rec.onerror = e => { console.error('recorder', e); if (this.onError) this.onError(e); };
       this.rec.start(1000);
     },
     put(blob) {
-      const seq = this.seq++;
+      const seq = this.seq++; this.lastData = performance.now();
       if (!this.useDB) { this.mem.push({ seq, blob }); return; }
       const secs = (performance.now() - this.t0) / 1000;   // keep the length in meta so a recovered video shows it
       if (seq % 10 === 0) this.pending = this.pending.then(() => tx('meta', 'readwrite', s => s.put({ rid: this.rid, mime: this.mime, ext: this.ext, done: false, secs }))).catch(() => {});
@@ -273,7 +289,7 @@ window.Rec = (() => {
       return all.map(r => r.blob);
     },
     async stop() {
-      const secs = (performance.now() - this.t0) / 1000; clearTimeout(this.wd);
+      const secs = (performance.now() - this.t0) / 1000; clearTimeout(this.wd); clearInterval(this.sg);
       await new Promise(res => { this.rec.onstop = res; this.rec.stop(); });
       await this.pending; this.active = false;
       const blobs = await this.collect(this.rid);
@@ -810,7 +826,7 @@ let resText = null, lastTap = { x: W / 2, y: H / 2 };
 function startResult(win, reason) {
   const q = cur.q; cur.done = true;
   store.used[q.id] = win ? 'win' : 'lose'; if (store.armed === q.id) store.armed = null; saveStore(); refreshSettings();
-  if (win) { ctx.save(); resText = fitRichBox(ctx, '{{' + (q.prize || '') + '}}', FONT.head, 900, 330, 104, 60, 1.22); ctx.restore(); sfx('correct', .9); sfx('shine', .55, .25); burst(W / 2, 620, 110); }
+  if (win) { sfx('correct', .9); sfx('shine', .55, .25); burst(W / 2, 700, 110); }
   else { resText = null; sfx('wrong', .95); }
   go('result', { win, reason, from: S.name === 'card' ? { ...lastTap } : { x: W / 2, y: CARD.timerY } });
 }
@@ -824,17 +840,14 @@ function drawResult(t, rt, clipR) {
   ctx.fillStyle = g; ctx.fillRect(-40, -40, W + 80, H + 80);
   const lg = ctx.createRadialGradient(W / 2, 620, 10, W / 2, 620, 420); lg.addColorStop(0, 'rgba(255,255,255,.38)'); lg.addColorStop(1, 'rgba(255,255,255,0)'); ctx.fillStyle = lg; ctx.fillRect(0, 160, W, 920);
   const ia = prog(rt, .1, 1), im = IMG[win ? 'bouquet' : 'warning'];
-  if (ia > 0) { ctx.save(); const s = eOutElastic(ia) * (win ? 1 : 1 + .04 * Math.sin(t * 6)), box = 470, k = Math.min(box / im.width, box / im.height) * s;
-    ctx.translate(W / 2, 620 + (win ? Math.sin(t * 1.8) * 10 : 0)); ctx.rotate(win ? Math.sin(t * 1.3) * .06 : 0);
+  const iy = win ? 700 : 620, ibox = win ? 600 : 470;
+  if (ia > 0) { ctx.save(); const s = eOutElastic(ia) * (win ? 1 : 1 + .04 * Math.sin(t * 6)), k = Math.min(ibox / im.width, ibox / im.height) * s;
+    ctx.translate(W / 2, iy + (win ? Math.sin(t * 1.8) * 12 : 0)); ctx.rotate(win ? Math.sin(t * 1.3) * .06 : 0);
     ctx.shadowColor = 'rgba(0,0,0,.4)'; ctx.shadowBlur = 40; ctx.shadowOffsetY = 24; ctx.drawImage(im, -im.width * k / 2, -im.height * k / 2, im.width * k, im.height * k); ctx.restore(); }
   const wa = eOutCubic(prog(rt, .35, .45));
-  if (win) {
-    ctx.save(); ctx.globalAlpha = wa; font(ctx, 74, FONT.head); ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.direction = 'rtl'; ctx.shadowColor = 'rgba(0,0,0,.35)'; ctx.shadowBlur = 16;
-    ctx.fillText(CFG.winLine, W / 2, 1030 + (1 - wa) * 30); ctx.restore();
-    const pa = eOutBack(prog(rt, .55, .55)); if (pa > 0 && resText) { const lh = resText.px * 1.22, y0 = 1172, n = resText.lines.length;
-      resText.lines.forEach((ln, i) => { const txt = ln.toks.map(k => k.t).join(' '); ctx.save(); ctx.translate(W / 2, y0 + i * lh); ctx.scale(pa, pa); goldText(ctx, txt, 0, 0, resText.px, FONT.head); ctx.restore(); });
-      const by = y0 + (n - 1) * lh + 230, ba = eOutElastic(prog(rt, .9, .9)); if (ba > 0) { ctx.save(); ctx.translate(W / 2, by); ctx.scale(ba, ba);
-        goldText(ctx, CFG.winBravo, 0, 0, 176, FONT.deco, { top: '#ffffff', mid: '#ffffff', bot: '#fff1c1', strokeCol: '#0b4d2a', stroke: 12 }); ctx.restore(); } }
+  if (win) {   // only the bouquet and «پیرۆزە!» — no prize line
+    const ba = eOutElastic(prog(rt, .45, .9)); if (ba > 0) { ctx.save(); ctx.translate(W / 2, 1330); ctx.scale(ba, ba);
+      goldText(ctx, CFG.winBravo, 0, 0, 220, FONT.deco, { top: '#ffffff', mid: '#ffffff', bot: '#fff1c1', strokeCol: '#0b4d2a', stroke: 14 }); ctx.restore(); }
   } else {
     ctx.save(); ctx.globalAlpha = wa; goldText(ctx, CFG.loseTitle, W / 2, 1090 + (1 - wa) * 30, 176, FONT.deco, { top: '#ffffff', mid: '#ffffff', bot: '#ffe0e0', strokeCol: '#4a0909', stroke: 12 });
     font(ctx, 78, FONT.head); ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.direction = 'rtl'; ctx.shadowColor = 'rgba(0,0,0,.4)'; ctx.shadowBlur = 16;
@@ -954,6 +967,8 @@ function startShow() {
   if (S.name !== 'title') return;
   audioUnlock(); go('titleOut'); goFull(); keepAwake(); trapBack();
   Rec.onNoAudio = () => toast('دەنگی یاری کار ناکات — ڕیکۆرد بێ دەنگ بەردەوامە');
+  Rec.onStall = () => toast('⚠️ ڕیکۆرد وەستاوە — شاشەکە داخراو بوو یان ئەپێکی تر کرایەوە؟');
+  Rec.onError = () => toast('⚠️ هەڵەیەک لە ڕیکۆرددا ڕوویدا');
   if (!NOREC) Rec.start(cv, recDest).catch(e => toast('ڕیکۆرد دەست پێ نەکرا: ' + (e.message || e)));
   initAudio().then(() => sfx('whoosh', .8)).catch(() => {});
 }
@@ -966,17 +981,22 @@ async function finishRound() {
 }
 function showSaved(res) {
   $('saving').classList.add('hidden'); $('savePanel').classList.remove('hidden');
-  if (!res) { $('saveInfo').textContent = NOREC ? 'دۆخی تاقیکردنەوە — ڕیکۆرد نەکرا.' : 'ڕیکۆرد نەکرا.'; $('btnSave').classList.add('hidden'); $('btnShare').classList.add('hidden'); return; }
+  if (!res) { $('savePrev').classList.add('hidden'); $('saveInfo').textContent = NOREC ? 'دۆخی تاقیکردنەوە — ڕیکۆرد نەکرا.' : 'ڕیکۆرد نەکرا.'; $('btnSave').classList.add('hidden'); $('btnShare').classList.add('hidden'); return; }
   $('btnSave').classList.remove('hidden');
   const mb = (res.blob.size / 1048576).toFixed(1), mm = Math.floor(res.secs / 60), ss = Math.round(res.secs % 60);
   $('saveInfo').textContent = `${mm}:${String(ss).padStart(2, '0')} · ${mb} MB · 1080×1920 · ${res.ext.toUpperCase()}`;
   const file = new File([res.blob], res.name, { type: res.blob.type }); window.__khanaLast = res;
+  // play the saved video right here, so it is visible at once that the round was recorded
+  const v = $('savePrev'); if (v._url) URL.revokeObjectURL(v._url); v._url = URL.createObjectURL(res.blob); v.src = v._url; v.classList.remove('hidden');
+  $('saveWarn').classList.add('hidden');
+  v.onerror = () => { $('saveWarn').classList.remove('hidden'); };
+  if (res.blob.size < 20000) $('saveWarn').classList.remove('hidden');
   $('btnSave').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(res.blob); a.download = res.name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 60000); toast('داگیرا — لە Downloads/گەلەری'); };
   let canShare = false; try { canShare = !!(navigator.canShare && navigator.canShare({ files: [file] })); } catch (e) {}
   $('btnShare').classList.toggle('hidden', !canShare);
   $('btnShare').onclick = async () => { try { await navigator.share({ files: [file], title: res.name }); } catch (e) {} };
 }
-$('btnNext').onclick = () => { $('savePanel').classList.add('hidden'); go('title'); };
+$('btnNext').onclick = () => { $('savePanel').classList.add('hidden'); const v = $('savePrev'); v.pause(); go('title'); };
 $('btnWipe').onclick = async () => { await Rec.wipe(); toast('ڤیدیۆ کۆنەکان لە بیرگە سڕانەوە'); };
 
 // ───────── ⚙ settings: pick the next question, edit texts — host only ─────────
@@ -1040,6 +1060,28 @@ $('edSave').onclick = () => { if (!editing) return;
 $('edReset').onclick = () => { if (!editing) return; delete store.edits[editing]; saveStore(); openEditor(editing); refreshSettings(); toast('گەڕایەوە بۆ دەقی بنەڕەت'); };
 $('setResetTiles').onclick = () => { if (!confirm('هەموو پرسیارەکان بکرێنەوە بە «ئامادە»؟')) return; store.tiles = Array(12).fill(null); store.used = {}; store.armed = null; saveStore(); refreshSettings(); toast('یاری لە سەرەتاوە'); };
 $('setResetTexts').onclick = () => { if (!confirm('هەموو دەقە گۆڕاوەکان بگەڕێنەوە بۆ بنەڕەت؟')) return; store.edits = {}; saveStore(); refreshSettings(); toast('دەقەکان گەڕانەوە'); };
+// 3-second recording test on this phone: records the live screen in memory and plays it back with the facts
+$('setTest').onclick = async () => {
+  if (Rec.active) { toast('لە کاتی ڕیکۆرد ناکرێت'); return; }
+  audioUnlock(); const out = $('testOut'), v = $('testVid'); out.textContent = '⏺ تاقیکردنەوە… 3 چرکە'; v.classList.add('hidden');
+  try {
+    if (!window.MediaRecorder || !cv.captureStream) throw new Error('ئەم وێبگەڕە ڕیکۆردی پشتگیری ناکات — Chrome بەکاربهێنە');
+    initAudio().catch(() => {});
+    const st = cv.captureStream(60); if (recDest) recDest.stream.getAudioTracks().forEach(t => st.addTrack(t));
+    const mime = Rec.pick(), chunks = [];
+    const r = new MediaRecorder(st, mime ? { mimeType: mime, videoBitsPerSecond: 8000000 } : { videoBitsPerSecond: 8000000 });
+    r.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    r.start(500); setTimeout(() => sfx('click', .7), 800);
+    await new Promise(res => setTimeout(res, 3000)); await new Promise(res => { r.onstop = res; r.stop(); }); st.getVideoTracks().forEach(t => t.stop());
+    const blob = new Blob(chunks, { type: (mime || 'video/webm').split(';')[0] });
+    if (v._url) URL.revokeObjectURL(v._url); v._url = URL.createObjectURL(blob); v.src = v._url; v.classList.remove('hidden');
+    const ok = await new Promise(res => { v.onloadedmetadata = () => res(true); v.onerror = () => res(false); setTimeout(() => res(v.videoWidth > 0), 4000); });
+    const fmt = (mime || r.mimeType || 'video/webm').split(';')[0].replace('video/', '').toUpperCase();
+    out.innerHTML = ok && blob.size > 20000
+      ? `<b class="okc">✓ ڕیکۆرد کار دەکات</b><br><bdi dir="ltr">${v.videoWidth}×${v.videoHeight} · ${fmt} · ${(blob.size / 1048576).toFixed(1)} MB</bdi> بۆ 3 چرکە · دەنگ: ${AC && AC.state === 'running' ? 'هەیە' : 'نییە'}`
+      : `<b class="bad">✗ ڕیکۆرد کار ناکات</b><br><bdi dir="ltr">${fmt} · ${(blob.size / 1024).toFixed(0)} KB</bdi> — ئەم وێنەیە بنێرە بۆ Claude`;
+  } catch (e) { out.innerHTML = `<b class="bad">✗ ${esc(e.message || e)}</b>`; }
+};
 $('setWipe').onclick = async () => { if (Rec.active) { toast('لە کاتی ڕیکۆرد ناکرێت'); return; } await Rec.wipe(); toast('ڤیدیۆ کۆنەکان سڕانەوە'); };
 
 // ───────── recording timer on the HUD ─────────
