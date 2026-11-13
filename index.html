@@ -121,7 +121,7 @@
   <div id="setList"></div>
   <div id="setStats"></div>
   <div class="tools">
-    <button id="setResetTiles">دەستپێکردنەوەی یاری (پاککردنەوەی ✓ و ✗)</button>
+    <button id="setResetTiles">هەموو پرسیارەکان بکەرەوە بە «ئامادە»</button>
     <button id="setResetTexts">گەڕاندنەوەی هەموو دەقەکان بۆ بنەڕەت</button>
     <button id="setWipe">سڕینەوەی ڤیدیۆ کۆنەکان لە بیرگە</button>
   </div>
@@ -570,7 +570,7 @@ function drawStamp(kind, cx, cy, s) {
   ctx.restore();
 }
 function drawTile(i, t, o = {}) {
-  const p = tilePos(i), used = store.tiles[i];
+  const p = tilePos(i), used = null;   // one player, one tile per round: no marks are ever left on the grid
   const s = o.s ?? 1, a = o.a ?? 1; if (a <= 0 || s <= 0) return;
   const bob = Math.sin(t * 1.7 + i * .8) * 5;
   const cx = p.x + TS / 2, cy = p.y + TS / 2 + bob;
@@ -807,7 +807,7 @@ function drawParts() { for (const p of PARTS) { ctx.save(); ctx.translate(p.x, p
 let resText = null, lastTap = { x: W / 2, y: H / 2 };
 function startResult(win, reason) {
   const q = cur.q; cur.done = true;
-  store.tiles[cur.i] = win ? 'win' : 'lose'; store.used[q.id] = win ? 'win' : 'lose'; if (store.armed === q.id) store.armed = null; saveStore(); refreshSettings();
+  store.used[q.id] = win ? 'win' : 'lose'; if (store.armed === q.id) store.armed = null; saveStore(); refreshSettings();
   if (win) { ctx.save(); resText = fitRichBox(ctx, '{{' + (q.prize || '') + '}}', FONT.head, 900, 330, 104, 60, 1.22); ctx.restore(); sfx('correct', .9); sfx('shine', .55, .25); burst(W / 2, 620, 110); }
   else { resText = null; sfx('wrong', .95); }
   go('result', { win, reason, from: S.name === 'card' ? { ...lastTap } : { x: W / 2, y: CARD.timerY } });
@@ -892,7 +892,6 @@ cv.addEventListener('pointerdown', e => {
   const p = toCanvas(e); lastTap = p;
   const b = hit(p.x, p.y); if (b) { pressed = b; return; }
   if (S.name === 'grid') { const i = tileAt(p.x, p.y); if (i < 0) return;
-    if (store.tiles[i]) { lp = { timer: setTimeout(() => { store.tiles[i] = null; saveStore(); toast(`خانەی ${KD(i + 1)} ئامادە کرایەوە`); lp = null; }, 1200) }; return; }
     openCard(i);
     sfx('whoosh', .8); sfx('paper', .7, .8); go('reveal'); }
 });
@@ -912,7 +911,7 @@ function act(id) {
     if (id === 'wrong') { startResult(false, 'wrong'); return; }
     if (id === 'other') { cur.done = true; sfx('whoosh', .6); go('cancel'); return; }
   }
-  if (S.name === 'result' && id === 'ok') { stampAt[cur.i] = NOW + .5; go('back'); }
+  if (S.name === 'result' && id === 'ok' && !S.ending) { S.ending = true; setTimeout(finishRound, 300); }   // the press is visible, then the video ends
 }
 
 // ───────── host controls (DOM, never recorded) ─────────
@@ -957,10 +956,11 @@ function startShow() {
   initAudio().then(() => sfx('whoosh', .8)).catch(() => {});
 }
 async function finishRound() {
-  cur = null; go('idle');
-  if (!Rec.active) { showSaved(null); return; }
+  if (!Rec.active) { cur = null; go('idle'); showSaved(null); return; }
+  const stopping = Rec.stop();          // stops the recorder synchronously, before the screen changes
+  cur = null; go('idle'); PARTS.length = 0;
   $('saving').classList.remove('hidden');
-  try { showSaved(await Rec.stop()); } catch (e) { $('saving').classList.add('hidden'); toast('هەڵە لە پاشەکەوتکردن: ' + (e.message || e)); showSaved(null); }
+  try { showSaved(await stopping); } catch (e) { $('saving').classList.add('hidden'); toast('هەڵە لە پاشەکەوتکردن: ' + (e.message || e)); showSaved(null); }
 }
 function showSaved(res) {
   $('saving').classList.add('hidden'); $('savePanel').classList.remove('hidden');
@@ -1006,7 +1006,7 @@ function refreshSettings() {
   $('setList').querySelectorAll('[data-arm]').forEach(b => b.onclick = ev => { ev.stopPropagation(); const id = b.dataset.arm; store.armed = store.armed === id ? null : id; saveStore(); refreshSettings();
     if (store.armed) { toast('دیاریکرا — هەر خانەیەک بکرێتەوە دەبێتە ئەم پرسیارە'); setTimeout(closeSettings, 450); } });
   $('setList').querySelectorAll('[data-ed]').forEach(b => b.onclick = ev => { ev.stopPropagation(); openEditor(b.dataset.ed); });
-  $('setStats').textContent = `${store.tiles.filter(Boolean).length} لە 12 خانە کراوەتەوە`;
+  $('setStats').textContent = `یاری پێکراوە: ${Object.keys(store.used).length} لە ${allQ().length}`;
 }
 let editing = null;
 function openEditor(id) {
@@ -1021,7 +1021,7 @@ $('edSave').onclick = () => { if (!editing) return;
   store.edits[editing] = { title: $('edTitle').value.trim(), text: $('edText').value.trim(), prize: $('edPrize').value.trim(), answer: $('edAnswer').value.trim(), type: $('edType').value, seconds: secs };
   saveStore(); $('editor').classList.add('hidden'); editing = null; refreshSettings(); toast('پاشەکەوت کرا'); };
 $('edReset').onclick = () => { if (!editing) return; delete store.edits[editing]; saveStore(); openEditor(editing); refreshSettings(); toast('گەڕایەوە بۆ دەقی بنەڕەت'); };
-$('setResetTiles').onclick = () => { if (!confirm('هەموو خانەکان و نیشانەکانی ✓/✗ پاک بکرێنەوە؟')) return; store.tiles = Array(12).fill(null); store.used = {}; store.armed = null; saveStore(); refreshSettings(); toast('یاری لە سەرەتاوە'); };
+$('setResetTiles').onclick = () => { if (!confirm('هەموو پرسیارەکان بکرێنەوە بە «ئامادە»؟')) return; store.tiles = Array(12).fill(null); store.used = {}; store.armed = null; saveStore(); refreshSettings(); toast('یاری لە سەرەتاوە'); };
 $('setResetTexts').onclick = () => { if (!confirm('هەموو دەقە گۆڕاوەکان بگەڕێنەوە بۆ بنەڕەت؟')) return; store.edits = {}; saveStore(); refreshSettings(); toast('دەقەکان گەڕانەوە'); };
 $('setWipe').onclick = async () => { if (Rec.active) { toast('لە کاتی ڕیکۆرد ناکرێت'); return; } await Rec.wipe(); toast('ڤیدیۆ کۆنەکان سڕانەوە'); };
 
