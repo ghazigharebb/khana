@@ -509,7 +509,7 @@ function drawQ(c, x, y, box, rot, glow) {   // the gold 3D question mark
 }
 
 // ───────── real 3D flip (WebGL), with a 2D fallback ─────────
-const G3 = (() => {
+const G3 = Q.has('nogl') ? null : (() => {   // ?nogl = test the 2D fallback
   const can = mk(W, H); let gl = null;
   try { gl = can.getContext('webgl', { premultipliedAlpha: true, alpha: true, preserveDrawingBuffer: true, antialias: true }); } catch (e) {}
   if (!gl) return null;
@@ -708,7 +708,7 @@ function openCard(i) {
 function drawPaperRect(x, y, w, h, r) { ctx.save(); rr(ctx, x, y, w, h, r); ctx.clip(); ctx.drawImage(PAPER, x, y, w, h); ctx.restore(); }
 function timerColor(f) { return f >= .5 ? mixc('#f59e0b', '#16a34a', (f - .5) / .5) : mixc('#dc2626', '#f59e0b', f / .5); }
 function remainNow() { if (!cur) return 0; if (cur.start == null) return cur.dur; return Math.max(0, cur.dur - (clock() / 1000 - cur.start)); }
-function fmtTime(sec, dur) { const s = Math.ceil(sec - 1e-6); if (dur <= 60) return String(s); const m = Math.floor(s / 60), r = s % 60; return `${m}:${String(r).padStart(2, '0')}`; }
+function fmtTime(sec, dur) { const s = Math.ceil(sec - 1e-6); if (dur < 60) return String(s); const m = Math.floor(s / 60), r = s % 60; return `${m}:${String(r).padStart(2, '0')}`; }
 function drawTimer(cx, cy, R, a) {
   if (a <= 0) return; const dur = cur.dur, rem = remainNow(), f = rem / dur, running = cur.start != null;
   ctx.save(); ctx.globalAlpha *= a; const sc = lerp(.7, 1, eOutBack(a)); ctx.translate(cx, cy); ctx.scale(sc, sc);
@@ -723,10 +723,10 @@ function drawTimer(cx, cy, R, a) {
   if (f > .002) { ctx.save(); ctx.shadowColor = col; ctx.shadowBlur = 22; ctx.strokeStyle = col; ctx.lineCap = 'round'; ctx.beginPath(); ctx.arc(0, 0, R, -Math.PI / 2, -Math.PI / 2 + f * Math.PI * 2); ctx.stroke(); ctx.restore();
     const ea = -Math.PI / 2 + f * Math.PI * 2; ctx.beginPath(); ctx.arc(Math.cos(ea) * R, Math.sin(ea) * R, 17, 0, 7); ctx.fillStyle = '#fff'; ctx.fill(); ctx.lineWidth = 6; ctx.strokeStyle = col; ctx.stroke(); }
   const warn = running && rem <= 10, frac = rem - Math.floor(rem), pulse = warn ? 1 + .14 * Math.pow(frac, 3) : 1;
-  ctx.save(); ctx.scale(pulse, pulse); font(ctx, dur <= 60 ? 150 : 124, FONT.num); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.direction = 'ltr';
+  ctx.save(); ctx.scale(pulse, pulse); font(ctx, dur < 60 ? 150 : 124, FONT.num); ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.direction = 'ltr';
   ctx.fillStyle = warn ? '#dc2626' : '#14183d'; ctx.fillText(fmtTime(rem, dur), 0, -6); ctx.restore();
   font(ctx, 40, FONT.head); ctx.fillStyle = 'rgba(20,24,61,.55)'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.direction = 'rtl';
-  ctx.fillText(dur <= 60 ? 'چرکە' : 'خولەک', 0, 84); ctx.textBaseline = 'alphabetic';
+  ctx.fillText(dur < 60 ? 'چرکە' : 'خولەک', 0, 84); ctx.textBaseline = 'alphabetic';
   ctx.restore();
   BTN.push({ id: 'ring', x: cx - R - 40, y: cy - R - 40, w: 2 * R + 80, h: 2 * R + 80 });
 }
@@ -785,7 +785,7 @@ function drawReveal(t, T) {
     ctx.save(); ctx.globalAlpha = .45 * Math.sin(Math.PI * b); const sg = ctx.createRadialGradient(cx, cy + 260, 10, cx, cy + 260, 300); sg.addColorStop(0, 'rgba(0,0,0,.8)'); sg.addColorStop(1, 'rgba(0,0,0,0)'); ctx.fillStyle = sg; ctx.fillRect(cx - 320, cy - 60, 640, 640); ctx.restore();
     const shade = .72 + .28 * Math.abs(Math.cos(ry)), spec = lerp(-.6, 1.8, b);
     if (G3 && !G3.failed) {
-      const ok = G3.draw(cx, cy, z, w, h, rx, ry, shade, spec);
+      let ok = false; try { ok = G3.draw(cx, cy, z, w, h, rx, ry, shade, spec); } catch (e) { reportErr(e); }
       if (!ok) G3.failed = true;
     }
     if (!G3 || G3.failed) {   // 2D fallback
@@ -809,7 +809,7 @@ function drawReveal(t, T) {
   }
   if (T >= 1.38) { const e = fall, lw0 = EW * .86, lh0 = EH * .88, x0 = ECX - lw0 / 2, y0 = ECY - EH / 2 + EH * .06 - 400;
     drawLetter(lerp(x0, 0, e), lerp(y0, 0, e), lerp(lw0, W, e), lerp(lh0, H, e), lerp(16, 0, e), e);
-    if (e >= 1) go('card'); }
+    }
 }
 
 // ───────── results ─────────
@@ -863,8 +863,10 @@ function drawResult(t, rt, clipR) {
 
 // ───────── frame ─────────
 let lastT = 0, lastDraw = 0;
+let errShown = 0;
+function reportErr(e) { console.error(e); const n = performance.now(); if (n - errShown > 4000) { errShown = n; try { toast('هەڵە: ' + (e && e.message || e)); } catch (x) {} } }
 function frame(ts) {
-  if (VT == null && ts - lastDraw >= 1000 / 60 - 3) { lastDraw = ts; try { frameBody(ts); } catch (e) { console.error(e); } }
+  if (VT == null && ts - lastDraw >= 1000 / 60 - 3) { lastDraw = ts; try { frameBody(ts); } catch (e) { reportErr(e); } }
   requestAnimationFrame(frame);
 }
 function frameBody(ts) {
@@ -874,10 +876,10 @@ function frameBody(ts) {
   switch (S.name) {
     case 'boot': ctx.fillStyle = '#0a0f35'; ctx.fillRect(0, 0, W, H); break;
     case 'title': drawTitle(t); break;
-    case 'titleOut': { const k = prog(st, 0, .8); drawTitle(t, k); if (k >= 1) go('grid', { intro: true }); break; }
+    case 'titleOut': { const k = prog(st, 0, .8); if (k >= 1) { go('grid', { intro: true }); drawBg(t); drawHeader(); break; } drawTitle(t, k); break; }
     case 'grid': drawBg(t); drawHeader(); drawGrid(t, { intro: S.intro ? st : null }); break;
-    case 'reveal': drawReveal(t, st); break;
-    case 'card': { ctx.drawImage(PAPER, 0, 0); drawCardContent(t, st);
+    case 'reveal': if (st >= 1.86) { go('card'); ctx.drawImage(PAPER, 0, 0); break; } try { drawReveal(t, st); } catch (e) { if (G3) G3.failed = true; reportErr(e); ctx.drawImage(PAPER, 0, 0); } break;
+    case 'card': { ctx.drawImage(PAPER, 0, 0); try { drawCardContent(t, st); } catch (e) { reportErr(e); }
       if (cur.start != null && !cur.done) { const rem = remainNow(), sec = Math.ceil(rem - 1e-6);
         if (sec !== cur.lastSec) { if (cur.lastSec != null && sec <= 10 && sec > 0) sfx('tick', sec <= 3 ? 1 : .6); cur.lastSec = sec; }
         if (rem <= 3 && rem > 0) { ctx.save(); ctx.globalAlpha = .28 * (rem - Math.floor(rem)); ctx.lineWidth = 60; ctx.strokeStyle = '#ef4444'; ctx.strokeRect(0, 0, W, H); ctx.restore(); }
@@ -897,7 +899,20 @@ function frameBody(ts) {
 }
 
 // ───────── input ─────────
-function hit(x, y) { for (let k = BTN.length - 1; k >= 0; k--) { const b = BTN[k]; if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return b; } return null; }
+// where the buttons are right now — worked out from the game state, so a tap works even if a frame failed to draw
+function hotspots() {
+  const L = [], t = VT != null ? NOW : Math.max(NOW, performance.now() / 1000), st = t - S.t0, B = (id, x, y, w, h) => L.push({ id, x, y, w, h });
+  if (S.name === 'title' && st > .5) B('start', W / 2 - 360, 1450, 720, 220);
+  if (S.name === 'card' && cur && !cur.done && st > .45) {
+    const y = CARD.btnY - 12, h = CARD.btnH + 24;
+    if (cur.start == null) { B('ring', W / 2 - CARD.R - 50, CARD.timerY - CARD.R - 50, 2 * CARD.R + 100, 2 * CARD.R + 100); B('startT', W / 2 - 360, y, 720, h); }
+    else if (cur.q.type === 'choice') { B('take', W - 80 - 450, y, 450, h); B('other', 70, y, 450, h); }
+    else { B('done', W - 80 - 620, y, 630, h); B('wrong', 60, y, 300, h); }
+  }
+  if (S.name === 'result' && st > .9 && !S.ending) B('ok', W / 2 - 320, 1670, 640, 190);
+  return L;
+}
+function hit(x, y) { const L = hotspots(); for (let k = L.length - 1; k >= 0; k--) { const b = L[k]; if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return b; } return null; }
 function toCanvas(e) { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; }
 function tileAt(x, y) { for (let i = 0; i < 12; i++) { const p = tilePos(i); if (x >= p.x && x <= p.x + TS && y >= p.y && y <= p.y + TS) return i; } return -1; }
 let lp = null;
@@ -1038,8 +1053,8 @@ function refreshSettings() {
     return `<section><h3><span class="dot" style="background:${g.color}"></span>${esc(g.name)}</h3>${items}</section>`;
   }).join('');
   $('setList').innerHTML = html;
-  $('setList').querySelectorAll('[data-arm]').forEach(b => b.onclick = ev => { ev.stopPropagation(); const id = b.dataset.arm; store.armed = store.armed === id ? null : id; saveStore(); refreshSettings();
-    if (store.armed) { toast('دیاریکرا — هەر خانەیەک بکرێتەوە دەبێتە ئەم پرسیارە'); setTimeout(closeSettings, 450); } });
+  $('setList').querySelectorAll('[data-arm]').forEach(b => b.onclick = ev => { ev.stopPropagation(); const id = b.dataset.arm; store.armed = id; saveStore(); refreshSettings();
+    toast('دیاریکرا — هەر خانەیەک بکرێتەوە دەبێتە ئەم پرسیارە'); setTimeout(closeSettings, 450); });
   $('setList').querySelectorAll('[data-ed]').forEach(b => b.onclick = ev => { ev.stopPropagation(); openEditor(b.dataset.ed); });
   $('setList').querySelectorAll('[data-tm]').forEach(sel => sel.onchange = () => { const v = parseInt(sel.value, 10); setTime(sel.dataset.tm, v); refreshSettings(); toast(`کات: ${durWords(v)}`); });
   $('setStats').textContent = `یاری پێکراوە: ${Object.keys(store.used).length} لە ${allQ().length}`;
@@ -1100,7 +1115,7 @@ document.addEventListener('gesturestart', e => e.preventDefault());
   go('title'); refreshSettings();
   const old = await Rec.unfinished().catch(() => null);
   if (old) { $('recover').classList.remove('hidden'); $('btnRecover').onclick = async () => { $('recover').classList.add('hidden'); const r = await Rec.recover(old); if (r) showSaved(r); }; $('btnRecoverNo').onclick = async () => { $('recover').classList.add('hidden'); await Rec.wipe(); }; }
-  window.__khana = { S: () => S, act, store: () => store, cur: () => cur, go, Rec, nextQ, G3: () => !!G3 && !G3.failed, ac: () => AC && AC.state,
+  window.__khana = { S: () => S, act, store: () => store, cur: () => cur, go, Rec, nextQ, G3: () => !!G3 && !G3.failed, hot: () => hotspots(), now: () => NOW, ac: () => AC && AC.state,
     step: DEBUG ? (n = 1, ms = 1000 / 60) => { if (VT == null) VT = performance.now(); for (let k = 0; k < n; k++) { VT += ms; frameBody(VT); } return S.name; } : undefined };
 })();
 })();
